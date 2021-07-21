@@ -35,6 +35,12 @@ def plot_simplex(
     """
     Plot simplex of points and/or convex hull
     """
+    hull_kws = hull_kws.copy()
+    hull_color = hull_kws.pop('color', hull_color)
+
+    point_scatter_kws = point_scatter_kws.copy()
+    point_colors = point_scatter_kws.pop('c', point_colors)
+
     assert n in {3, 4}
 
     if ax is None:

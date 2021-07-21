@@ -120,6 +120,7 @@ class BaseStimulus(ABC, StimPlottingMixin):
         self._fitted_signal = None
         self._metadata = None
         self._events = None
+        self._rng = np.random.default_rng(self.seed)
 
         # if settings already exists simply update dictionary
         settings = {
@@ -135,6 +136,10 @@ class BaseStimulus(ABC, StimPlottingMixin):
             )
         else:
             self._settings = settings
+
+    @property
+    def rng(self):
+        return self._rng
 
     @property
     def _plot_attrs(self):
@@ -160,8 +165,9 @@ class BaseStimulus(ABC, StimPlottingMixin):
         if self.estimator is None:
             self._stimulus = self.signal
         else:
-            # TODO addition of reshape estimator if necessary
-            if self.signal.ndim != 2:
+            if hasattr(self.estimator, 'map'):
+                self._stimulus = self.estimator.map(self.signal)
+            elif self.signal.ndim != 2:
                 raise ValueError(
                     'Signal must be two-dimensional, '
                     'but is {self.signal.ndim}.'
@@ -752,6 +758,7 @@ class DynamicStimulus(BaseStimulus):
             estimator=estimator,
             rate=rate,
             seed=seed,
+            subsample=subsample,
             **kwargs
         )
 

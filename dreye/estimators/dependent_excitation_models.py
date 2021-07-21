@@ -13,6 +13,8 @@ from dreye.estimators.excitation_models import IndependentExcitationFit
 @inherit_docstrings
 class DependentExcitationFit(IndependentExcitationFit):
 
+    n_epochs = 10
+
     def __init__(
         self,
         *,
@@ -22,7 +24,7 @@ class DependentExcitationFit(IndependentExcitationFit):
         photoreceptor_model=None,  # dict or Photoreceptor class
         fit_weights=None,
         background=None,  # dict or Spectrum instance or array-like
-        measured_spectra=None,  # dict, or MeasuredSpectraContainer
+        measured_spectra=None,  # MeasuredSpectraContainer, numpy.ndarray
         max_iter=None,
         unidirectional=False,
         bg_ints=None,
@@ -104,14 +106,14 @@ class DependentExcitationFit(IndependentExcitationFit):
 
         return self
 
-    def _reformat_intensities(self, w, **kwargs):
+    def _reformat_intensities(self, w=None, **kwargs):
         # len(measured_spectra) x independent_layers, len(X) x independent_layers
-        ws, pixel_strength = self._format_intensities(w, **kwargs)
+        ws, pixel_strength = self._format_intensities(w=w, **kwargs)
         # len(X) x len(measured_spectra)
         return pixel_strength @ ws.T
         # return (ws[None, ...] * pixel_strength[:, None, ...]).sum(axis=-1)
 
-    def _format_intensities(self, w, ws=None, pixel_strength=None):
+    def _format_intensities(self, w=None, ws=None, pixel_strength=None):
         offset = 0
         if ws is None:
             ws = np.zeros((len(self.measured_spectra_), self._independent_layers_))
@@ -122,35 +124,39 @@ class DependentExcitationFit(IndependentExcitationFit):
         if pixel_strength is None:
             pixel_strength = w[offset:].reshape(-1, self._independent_layers_)
             # TODO Find better method to handle this
-            pixel_strength = np.round(pixel_strength * self.bit_depth, 0) / self.bit_depth
+            # assumes pixel strength is between 0-1 
+            pixel_strength = np.floor(pixel_strength * 2**self.bit_depth) / 2**self.bit_depth
         return ws, pixel_strength
 
     def _fit_sample(self, capture_x, excite_x):
+        # capture_x.shape == excite_x.shape - numpy.ndarray (n_pixels x n_opsins)
         np.random.seed(self.seed)
         # adjust bounds if necessary
         bounds = list(self.intensity_bounds_)
+        # two element list of numpy arrays with the lower and upper bound
+        # ([l_led1, l_led2], [u_led1, u_led2])
         if self._unidirectional_:
             if np.all(capture_x >= self.capture_border_):
-                bounds[0] = self.bg_ints_
+                bounds[0] = self.bg_ints_  # self.bg_ints_ - numpy.ndarray (n_leds)
             elif np.all(capture_x <= self.capture_border_):
                 bounds[1] = self.bg_ints_
         # find initial w0 using linear least squares by using the mean capture across all pixels
         w0 = self._init_sample(capture_x.mean(0), bounds)
-        # add independent layer dimensions
+        # w0: np.ndarray (n_leds)
+
+        # init all parameters
+
+        # add independent layer dimensions        
         w0s = []
         bounds0 = []
         bounds1 = []
+        # layer_assignments: list of lists 
+        # e.g. [[0, 1, 2], [3, 4], [0, 2, 4]]
         for source_idcs in self._layer_assignments_:
             w0s.append(w0[source_idcs])
+            # [np.array([2.3, 4.5, .3]), np.array([6, 3]), np.array([2.3, 0.3, 3])]
             bounds0.append(bounds[0][source_idcs])
             bounds1.append(bounds[1][source_idcs])
-
-        # pixel strength values
-        n_pixels = len(capture_x)
-        bounds0.append([0]*n_pixels*self._independent_layers_)
-        bounds1.append([1]*n_pixels*self._independent_layers_)
-        # random initial values for pixel intensities
-        w0s.append(np.random.random(n_pixels*self._independent_layers_))
 
         # TODO make more like EM-algorithm
         # TODO handle pixel bit depth better
@@ -161,26 +167,99 @@ class DependentExcitationFit(IndependentExcitationFit):
             np.concatenate(bounds0), 
             np.concatenate(bounds1)
         )
-        # fitted result
-        result = least_squares(
-            self._objective,
-            x0=w0,
-            args=(excite_x,),
-            bounds=bounds,
-            max_nfev=self.max_iter,
-            **({} if self.lsq_kwargs is None else self.lsq_kwargs)
-        )
 
-        if not result.success:
+        # pixel strength values
+        n_pixels = len(capture_x)
+        p0 = np.random.random(
+            n_pixels*self._independent_layers_
+        ).reshape(-1, self._independent_layers_)
+        # proper rounding or integer mapping for p0
+        pbounds = (0, 1)
+
+        # self.A_ -
+
+        for _ in range(self.n_epochs):
+            # step 1
+            result = least_squares(
+                self._objective,
+                x0=w0.ravel(),
+                args=(excite_x,),
+                kwargs={'pixel_strength': p0},
+                bounds=bounds,
+                max_nfev=self.max_iter,
+                **({} if self.lsq_kwargs is None else self.lsq_kwargs)
+            )
+            w0, p0 = self._format_intensities(result.x, pixel_strength=p0)
+            # step 2
+            # self.capture_x
+            result = least_squares(
+                self._objective,
+                x0=p0.ravel(),
+                args=(excite_x,),
+                kwargs={'ws': w0},
+                bounds=pbounds,
+                max_nfev=self.max_iter,
+                **({} if self.lsq_kwargs is None else self.lsq_kwargs)
+            )
+            w0, p0 = self._format_intensities(result.x, ws=w0)
+            # step three - check convergence and break 
+        else:
             warnings.warn("Convergence was not accomplished "
                           "for X; "
-                          "increase the number of max iterations.", RuntimeWarning)
+                          "increase the number of epochs.", RuntimeWarning)
+        # for _ in range(n_epochs):
+        #   1. fit best leds while fixing pixels - nonlinear least squares with floats
+        #   2. fit best pixels while fixing leds - MIP
+        #   3. you check convergence -> stop or wait until end of epochs
+        # fitted result
+        # result = least_squares(
+        #     self._objective,
+        #     x0=w0,
+        #     args=(excite_x,),
+        #     bounds=bounds,
+        #     max_nfev=self.max_iter,
+        #     **({} if self.lsq_kwargs is None else self.lsq_kwargs)
+        # )
 
-        layer_intensities, pixel_strength = self._format_intensities(result.x)
-        fitted_intensities = self._reformat_intensities(result.x)
+        layer_intensities, pixel_strength = w0, p0
+        fitted_intensities = self._reformat_intensities(ws=w0, pixel_strength=p0)
         
         return fitted_intensities, layer_intensities, pixel_strength
 
     def _objective(self, w, excite_x, **kwargs):
-        w = self._reformat_intensities(w, **kwargs).T  # len(measured_spectra) x len(X)
-        return super()._objective(w, excite_x).ravel()
+        w = self._reformat_intensities(w, **kwargs).T  # n_leds x n_pixels
+        # return super()._objective(w, excite_x).ravel()
+        # from independent
+        x_pred = self.get_excitation(w)
+        return (self.fit_weights_ * (excite_x - x_pred)).ravel()  # residuals
+
+    
+    def get_capture(self, w):
+        """
+        Get capture given `w`.
+
+        Parameters
+        ----------
+        w : array-like
+            Array-like object with the zeroth axes equal to the number of light sources. 
+            Can also be multidimensional.
+        """
+        # threshold by noise if necessary and apply nonlinearity
+        x_pred = (self.A_ @ w).T
+        if np.any(self.photoreceptor_model_.capture_noise_level):
+            x_pred += self.noise_term_
+        x_pred += self.q_bg_
+        return x_pred
+
+    def get_excitation(self, w):
+        """
+        Get excitation given `w`.
+
+        Parameters
+        ----------
+        w : array-like
+            Array-like object with the zeroth axes equal to the number of light sources. 
+            Can also be multidimensional.
+        """
+        return self.photoreceptor_model_.excitefunc(self.get_capture(w))
+

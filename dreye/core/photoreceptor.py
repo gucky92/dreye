@@ -92,7 +92,8 @@ def create_photoreceptor_model(
         pr_class = LinearContrastPhotoreceptor
 
     if is_signallike(sensitivity):
-        pass
+        # ensures zeroness
+        sensitivity.magnitude[sensitivity.magnitude < 0] = 0
     elif (hasattr(sensitivity, 'ndim') and sensitivity.ndim > 1):
         if wavelengths is None:
             wavelengths = np.linspace(300, 700, len(sensitivity))
@@ -113,7 +114,7 @@ def create_photoreceptor_model(
             wavelengths = DEFAULT_WL_RANGE
         centers = np.linspace(350, 550, 3)
         sensitivity = govardovskii2000_template(wavelengths[:, None], centers[None, :])
-
+    
     return pr_class(
         sensitivity,
         wavelengths=wavelengths,
@@ -476,9 +477,20 @@ class Photoreceptor(ABC):
 
         if is_string(background):
             if background == 'mean':
-                return q / np.mean(q, axis=0)
+                q_bg = np.mean(q, axis=0)
+                if add_noise:
+                    q_bg += self.capture_noise_level
+            elif background == 'norm':
+                q_bg = np.trapz(sensitivity, wls, axis=-1)
+                if add_noise:
+                    q_bg += self.capture_noise_level
             else:
-                raise TypeError("`background` must be array-like or string 'mean'.")
+                raise TypeError(
+                    "`background` must be array-like or string "
+                    "of `mean` or `norm`."
+                )
+            
+            return q / q_bg
 
         # calculate relative capture
         q_bg = self.capture(

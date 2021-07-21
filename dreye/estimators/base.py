@@ -538,10 +538,9 @@ class _PrModelMixin:
                 self.background_ = self._bg_ints_background_
                 # otherwise keep background_ None
 
-        elif is_string(self.background_) and (self.background_ == 'mean'):
+        elif is_string(self.background_) and (self.background_ in {'mean', 'norm'}):
             self._background_external_ = False
             self._bg_ints_background_ = 0
-            assert not np.any(self.photoreceptor_model_.capture_noise_level), "Capture noise must be zero, if using `mean` for background"
             assert np.allclose(self.bg_ints_, 0), "If background is `{self.background_}`, bg_ints must be all zeros."
 
         elif self.background_external or self.background_external is None:

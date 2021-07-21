@@ -2,9 +2,12 @@
 Utility functions to convert from barycentric coordinates
 """
 
+from scipy.spatial import ConvexHull
 from itertools import product
 import numpy as np
+from scipy.spatial.qhull import QhullError
 from sklearn.preprocessing import normalize
+from sklearn.decomposition import PCA
 
 
 def barycentric_dim_reduction(X):
@@ -29,7 +32,8 @@ def barycentric_to_cartesian_transformer(n):
     for i in range(2, n):
         A[i, :i-1] = np.mean(A[:i, :i-1], axis=0)
         dis = np.sum((A[:i, :i-1] - A[i, :i-1])**2, axis=1)
-        assert np.unique(dis).size == 1
+        assert np.isclose(dis, dis[0]).all(), "non-unique rows"
+        # assert np.unique(dis).size == 1
         x = np.sqrt(1 - dis.mean())
         A[i, i-1] = x
     return A
@@ -68,9 +72,49 @@ def _find_points_to_intersect_for_simplex(points, c):
     assert np.any(threshbool), "target `c` too low."
     assert not np.all(threshbool), "target `c` too high."
 
-    p1 = points[threshbool]
-    p2 = points[~threshbool]
-    return product(p1, p2)
+    if points.shape[0] > points.shape[1]:
+        try:
+            hull = ConvexHull(points)
+        except QhullError:
+            # reduce dimensionality
+            svd = PCA(points.shape[1]-1)
+            xt = svd.fit_transform(points)
+            evar = np.cumsum(svd.explained_variance_ratio_)
+            ndim = np.min(np.flatnonzero(np.isclose(evar, 1))) + 1
+
+            # points lie in one dimension
+            if ndim == 1:
+                p1 = points[threshbool][:1]
+                p2 = points[~threshbool][-1:]
+                return product(p1, p2)
+            
+            hull = ConvexHull(xt[:, :ndim])
+
+        idcs1 = np.flatnonzero(threshbool)  # smaller
+        idcs2 = np.flatnonzero(~threshbool)  # bigger
+        edges = []
+        for e in hull.simplices:
+            for idx, jdx in product(e, e):
+                if idx == jdx:
+                    continue
+                if (idx, jdx) in edges or (jdx, idx) in edges:
+                    continue
+                # can't be both below threshold
+                if idx in idcs1 and jdx in idcs1:
+                    continue
+                # can't be both above threshold
+                if idx in idcs2 and jdx in idcs2:
+                    continue
+                # idx must be the lower point
+                if psum[idx] > psum[jdx]:
+                    continue
+
+                edges.append((idx, jdx))
+                yield points[idx], points[jdx]
+    else:
+        p1 = points[threshbool]
+        p2 = points[~threshbool]
+        return product(p1, p2)
 
 
 def simplex_plane_points_in_hull(points, c):

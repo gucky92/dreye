@@ -2,7 +2,7 @@
 various metric functions
 """
 
-from dreye.utilities.common import is_numeric
+import tqdm
 import warnings
 
 import numpy as np
@@ -10,9 +10,10 @@ import pandas as pd
 from scipy.spatial import ConvexHull
 from sklearn.feature_selection import mutual_info_regression
 
+from dreye.utilities.common import is_numeric
 from dreye.utilities import (
     compute_jensen_shannon_similarity, 
-    compute_mean_width, is_string, is_dictlike
+    compute_mean_width, is_dictlike
 )
 from dreye.utilities.barycentric import (
     barycentric_dim_reduction, simplex_plane_points_in_hull
@@ -132,13 +133,17 @@ def compute_gamut(
             return 0
         elif np.all(overall_q > at_overall_q):
             return 0
-        points = simplex_plane_points_in_hull(points, at_overall_q)
-        overall_q = points.sum(axis=-1)
+        # just keep current points if zero q the only one below at_overall_q
+        elif np.all(overall_q[overall_q < at_overall_q] == 0):
+            pass
+        else:
+            points = simplex_plane_points_in_hull(points, at_overall_q)
+            overall_q = points.sum(axis=-1)
     
     points = points[overall_q != 0]
     points = barycentric_dim_reduction(points)
     if center:
-        points -= barycentric_dim_reduction(np.ones((1, points.shape[1])))
+        points -= barycentric_dim_reduction(np.ones((1, points.shape[1]+1)))
     num = gamut_metric(points, **kwargs)
     
     if relative_to is not None:
@@ -261,7 +266,7 @@ def metric_constructor_helper(
     **kwargs
 ):
     metrics = source_df.copy()
-    for idx, row in source_df.iterrows():
+    for idx, row in tqdm.tqdm(source_df.iterrows(), total=len(source_df)):
         metric = metric_func(
             row['light_combos'], 
             *args, **kwargs
@@ -365,6 +370,7 @@ def compute_est_score(
         name = score_method
 
     def metric_func(source_idx, B=None, **kwargs):
+        assert B is None, "Why is B not None?"
         _source_idx = get_source_idx(measured_spectra.names, source_idx)
         intensity_bounds = kwargs.get('intensity_bounds', None)
         if intensity_bounds is not None:

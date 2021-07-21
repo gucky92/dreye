@@ -5,6 +5,7 @@ Excitation models
 import warnings
 
 import numpy as np
+import cvxpy as cp
 from scipy.optimize import OptimizeResult
 from scipy.optimize import lsq_linear, least_squares
 from sklearn.utils.validation import check_array, check_is_fitted
@@ -12,6 +13,7 @@ from sklearn.utils.validation import check_array, check_is_fitted
 from dreye.utilities import (
     optional_to, asarray, is_listlike, is_callable
 )
+from dreye.utilities.common import is_numeric, is_string
 from dreye.constants import ureg
 from dreye.estimators.base import _SpectraModel, _PrModelMixin, OptimizeResultContainer
 from dreye.err import DreyeError
@@ -124,7 +126,8 @@ class IndependentExcitationFit(_SpectraModel, _PrModelMixin):
         background_external=None, 
         intensity_bounds=None, 
         wavelengths=None, 
-        capture_noise_level=None
+        capture_noise_level=None, 
+        underdetermined_opt=None
     ):
         self.photoreceptor_model = photoreceptor_model
         self.measured_spectra = measured_spectra
@@ -140,6 +143,7 @@ class IndependentExcitationFit(_SpectraModel, _PrModelMixin):
         self.intensity_bounds = intensity_bounds
         self.wavelengths = wavelengths
         self.capture_noise_level = capture_noise_level
+        self.underdetermined_opt = underdetermined_opt
 
     def _set_required_objects(self, size=None):
         # if requirements set do not reset them (speed improvement)
@@ -230,6 +234,7 @@ class IndependentExcitationFit(_SpectraModel, _PrModelMixin):
                           "increase the number of max iterations.", RuntimeWarning)
 
         self.fitted_intensities_ = np.array(self.container_.x)
+        self.optimal_ = np.array(self.container_.status) >= 4
         # get fitted X
         self.fitted_excite_X_ = self.get_excitation(self.fitted_intensities_.T)
         self.fitted_capture_X_ = self.photoreceptor_model_.inv_excitefunc(
@@ -293,19 +298,77 @@ class IndependentExcitationFit(_SpectraModel, _PrModelMixin):
                     success=True
                 )
         # find initial w0 using linear least squares
-        w0 = self._init_sample(capture_x, bounds)
-        # fitted result
-        result = least_squares(
-            self._objective,
-            x0=w0,
-            args=(excite_x,),
-            bounds=tuple(bounds),
-            max_nfev=self.max_iter,
-            **({} if self.lsq_kwargs is None else self.lsq_kwargs)
-        )
-        return result
+        result = self._init_sample(capture_x, bounds, return_result=True)
+        # non-perfect solution
+        if (
+            (self.underdetermined_opt is None) 
+            # non-perfect solution not found
+            or (result.status != 3) 
+            # not underdetermined
+            or (self.A_.shape[0] >= self.A_.shape[1])
+        ):
+            # fit result via nonlinear least squares
+            return least_squares(
+                self._objective,
+                x0=result.x,
+                args=(excite_x,),
+                bounds=tuple(bounds),
+                max_nfev=self.max_iter,
+                **({} if self.lsq_kwargs is None else self.lsq_kwargs)
+            )
+        else:
+            # underdetermined and optimal system
+            w = cp.Variable(self.A_.shape[1], pos=True)
+            constraints = [
+                self.get_capture(w) == capture_x, 
+                w >= bounds[0], w <= bounds[1]
+            ]
 
-    def _init_sample(self, capture_x, bounds):
+            if is_numeric(self.underdetermined_opt):
+                # aim for some overall intensity
+                obj = cp.Minimize(
+                    cp.sum_squares(cp.sum(w) - self.underdetermined_opt)
+                )
+            elif is_listlike(self.underdetermined_opt):
+                wtarget = asarray(self.underdetermined_opt)
+                obj = cp.Minimize(
+                    cp.sum_squares(wtarget - w)
+                )
+            elif not is_string(self.underdetermined_opt):
+                raise NameError(
+                    f"`{self.underdetermined_opt}` is not a underdetermined_opt option."
+                )
+
+            elif self.underdetermined_opt == 'max':
+                obj = cp.Maximize(cp.sum(w))
+            elif self.underdetermined_opt == 'min':
+                obj = cp.Minimize(cp.sum(w))
+            elif self.underdetermined_opt == 'var':
+                obj = cp.Minimize(w - cp.sum(w)/w.size)
+
+            else:
+                raise NameError(
+                    f"`{self.underdetermined_opt}` is not a underdetermined_opt option."
+                )
+            prob = cp.Problem(obj, constraints)
+            cost = prob.solve()
+            assert prob.status == cp.OPTIMAL, 'BUG: optimality not achieved.'
+            return OptimizeResult(
+                x=w.value,
+                cost=cost,
+                fun=np.zeros(capture_x.size),
+                jac=np.zeros((capture_x.size, self.bg_ints_.size)),
+                grad=np.zeros(capture_x.size),
+                optimality=0.0,
+                active_mask=0,
+                nfev=1,
+                njev=None,
+                status=5,
+                message='Optimality achieved and used `underdetermined_opt`',
+                success=True
+            )
+
+    def _init_sample(self, capture_x, bounds, return_result=False):
         # weighted fit is better for substitution types of fits
         if self.weighted_init_fit_:
             result = lsq_linear(
@@ -321,6 +384,8 @@ class IndependentExcitationFit(_SpectraModel, _PrModelMixin):
                 max_iter=self.max_iter
             )
         # return fitted intensity (w)
+        if return_result:
+            return result
         return result.x
 
     def _objective(self, w, excite_x):

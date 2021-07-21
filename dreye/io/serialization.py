@@ -189,6 +189,7 @@ def serializer(obj):
     """
     Serializer of numpy, pandas objects and dreye objects etc.
     """
+    # TODO NaN handling in numpy arrays
 
     if isinstance(obj, np.ndarray) and obj.dtype.fields is not None:
         # ATTENTION: https://stackoverflow.com/questions/24814595/
@@ -208,7 +209,7 @@ def serializer(obj):
     elif isinstance(obj, ureg.Unit):
         obj = {PINT_PREFIX: str(obj)}
     elif isinstance(obj, ureg.Quantity):
-        obj = {QUANT_PREFIX: [obj.magnitude, obj.units]}
+        obj = {QUANT_PREFIX: [obj.magnitude, obj.units]}  # TODO convert NaNs to None
     elif hasattr(obj, 'to_dict') and hasattr(obj, 'from_dict'):
         cls, module_name, dictionary = _class_serializer(obj)
         if module_name.split('.')[0] == 'dreye':

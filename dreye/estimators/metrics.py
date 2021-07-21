@@ -13,13 +13,8 @@ from dreye.estimators.silent_substitution import BestSubstitutionFit
 from dreye.estimators.excitation_models import IndependentExcitationFit
 
 
-# TODO metrics that depend on estimators
-# from dreye.estimators.excitation_models import IndependentExcitationFit
-# from dreye.estimators.silent_substitution import BestSubstitutionFit
-# from dreye.estimators.led_substitution import LedSubstitutionFit
-# TODO simplify
+# TODO add old metrics back in new format
 
-# scale sensitivity by l1-norm?
 
 @inherit_docstrings
 class Metrics(_InitDict, _PrModelMixin):

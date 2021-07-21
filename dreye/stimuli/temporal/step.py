@@ -450,8 +450,7 @@ class NoiseStepStimulus(StepStimulusMixin, SetTruncGaussianValues):
             random_state=self.values_seed
         )
         if self.subsample:
-            rng = np.random.default_rng(self.seed)
-            values = rng.choice(
+            values = self.rng.choice(
                 values,
                 size=int(values.shape[0] * self.subsample),
                 replace=False,
@@ -582,9 +581,6 @@ class RandomSwitchStimulus(AbstractStepStimulus, SetRandomStepMixin):
         events = pd.DataFrame()
         metadata = {}
 
-        # set seed
-        np.random.seed(self.seed)
-
         # iterate over each channel
         # since py_version > 3.6, dictionary is ordered
         for key, ele in self.values.items():
@@ -597,7 +593,7 @@ class RandomSwitchStimulus(AbstractStepStimulus, SetRandomStepMixin):
                 dur = distribution.rvs()
 
                 # draw random sample from values (uniform distribution)
-                value = np.random.choice(ele, p=self.values_probs[key])
+                value = self.rng.choice(ele, p=self.values_probs[key])
 
                 row = pd.Series(dict(
                     delay=cum_dur,
